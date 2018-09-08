@@ -82,6 +82,7 @@ $ sudo py-spy --flame profile.svg -d 20 -r 10000 \
   -- python3.6 server.py
 ```
 
+なので、サーバープロセスからプロファイリングするときは`py-spy`から立ち上げない方が良さ気。
 
 ## Request
 
