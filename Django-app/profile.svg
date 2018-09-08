@@ -1,0 +1,1610 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="438" onload="init(evt)" viewBox="0 0 1200 438" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs >
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	.func_g:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	var details, searchbtn, matchedtxt, svg;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+	}
+
+	// mouse-over for info
+	function s(node) {		// show
+		info = g_to_text(node);
+		details.nodeValue = "Function: " + info;
+	}
+	function c() {			// clear
+		details.nodeValue = ' ';
+	}
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	})
+
+	// functions
+	function find_child(parent, name, attr) {
+		var children = parent.childNodes;
+		for (var i=0; i<children.length;i++) {
+			if (children[i].tagName == name)
+				return (attr != undefined) ? children[i].attributes[attr].value : children[i];
+		}
+		return;
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_"+attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_"+attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_"+attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes["width"].value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes["x"].value = parseFloat(r.attributes["x"].value) +3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2*12*0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x=txt.length-2; x>0; x--) {
+			if (t.getSubStringLength(0, x+2) <= w) {
+				t.textContent = txt.substring(0,x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = (parseFloat(e.attributes["x"].value) - x - 10) * ratio + 10;
+				if(e.tagName == "text") e.attributes["x"].value = find_child(e.parentNode, "rect", "x") + 3;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseFloat(e.attributes["width"].value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_child(c[i], x-10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes["x"] != undefined) {
+				orig_save(e, "x");
+				e.attributes["x"].value = 10;
+			}
+			if (e.attributes["width"] != undefined) {
+				orig_save(e, "width");
+				e.attributes["width"].value = parseInt(svg.width.baseVal.value) - (10*2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for(var i=0, c=e.childNodes; i<c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr["width"].value);
+		var xmin = parseFloat(attr["x"].value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr["y"].value);
+		var ratio = (svg.width.baseVal.value - 2*10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "1.0";
+
+		var el = document.getElementsByTagName("g");
+		for(var i=0;i<el.length;i++){
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a["x"].value);
+			var ew = parseFloat(a["width"].value);
+			// Is it an ancestor
+			if (1 == 0) {
+				var upstack = parseFloat(a["y"].value) > ymin;
+			} else {
+				var upstack = parseFloat(a["y"].value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.style["opacity"] = "0.5";
+					zoom_parent(e);
+					e.onclick = function(e){unzoom(); zoom(this);};
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.style["display"] = "none";
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.style["display"] = "none";
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					e.onclick = function(e){zoom(this);};
+					update_text(e);
+				}
+			}
+		}
+	}
+	function unzoom() {
+		var unzoombtn = document.getElementById("unzoom");
+		unzoombtn.style["opacity"] = "0.0";
+
+		var el = document.getElementsByTagName("g");
+		for(i=0;i<el.length;i++) {
+			el[i].style["display"] = "block";
+			el[i].style["opacity"] = "1";
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+	}
+
+	// search
+	function reset_search() {
+		var el = document.getElementsByTagName("rect");
+		for (var i=0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)", "");
+			if (term != null) {
+				search(term)
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			searchbtn.style["opacity"] = "0.1";
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.style["opacity"] = "0.0";
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		var re = new RegExp(term);
+		var el = document.getElementsByTagName("g");
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			if (e.attributes["class"].value != "func_g")
+				continue;
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (rect == null) {
+				// the rect might be wrapped in an anchor
+				// if nameattr href is being used
+				if (rect = find_child(e, "a")) {
+				    rect = find_child(r, "rect");
+				}
+			}
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes["width"].value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes["x"].value);
+				orig_save(rect, "fill");
+				rect.attributes["fill"].value =
+				    "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.style["opacity"] = "1.0";
+		searchbtn.firstChild.nodeValue = "Reset Search"
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.style["opacity"] = "1.0";
+		pct = 100 * count / maxwidth;
+		if (pct == 100)
+			pct = "100"
+		else
+			pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+	function searchover(e) {
+		searchbtn.style["opacity"] = "1.0";
+	}
+	function searchout(e) {
+		if (searching) {
+			searchbtn.style["opacity"] = "1.0";
+		} else {
+			searchbtn.style["opacity"] = "0.1";
+		}
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="438.0" fill="url(#background)"  />
+<text text-anchor="middle" x="600.00" y="24" font-size="17" font-family="Verdana" fill="rgb(0,0,0)"  >Icicle Graph</text>
+<text text-anchor="" x="10.00" y="421" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="details" > </text>
+<text text-anchor="" x="10.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="unzoom" onclick="unzoom()" style="opacity:0.0;cursor:pointer" >Reset Zoom</text>
+<text text-anchor="" x="1090.00" y="24" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="search" onmouseover="searchover()" onmouseout="searchout()" onclick="search_prompt()" style="opacity:0.1;cursor:pointer" >Search</text>
+<text text-anchor="" x="1090.00" y="421" font-size="12" font-family="Verdana" fill="rgb(0,0,0)" id="matched" > </text>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>content (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/http/response.py:323) (153 samples, 0.19%)</title><rect x="1116.3" y="228" width="2.3" height="15.0" fill="rgb(240,140,9)" rx="2" ry="2" />
+<text text-anchor="" x="1119.35" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>makeRecord (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/logging/__init__.py:1417) (193 samples, 0.24%)</title><rect x="1051.5" y="276" width="2.9" height="15.0" fill="rgb(250,8,42)" rx="2" ry="2" />
+<text text-anchor="" x="1054.55" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (301 samples, 0.37%)</title><rect x="1099.8" y="292" width="4.4" height="15.0" fill="rgb(230,168,47)" rx="2" ry="2" />
+<text text-anchor="" x="1102.84" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (200 samples, 0.25%)</title><rect x="1011.4" y="148" width="2.9" height="15.0" fill="rgb(231,6,20)" rx="2" ry="2" />
+<text text-anchor="" x="1014.39" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/message.py:460) (201 samples, 0.25%)</title><rect x="801.1" y="212" width="3.0" height="15.0" fill="rgb(254,153,24)" rx="2" ry="2" />
+<text text-anchor="" x="804.11" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/wsgi.py:142) (282 samples, 0.35%)</title><rect x="943.3" y="196" width="4.2" height="15.0" fill="rgb(245,27,30)" rx="2" ry="2" />
+<text text-anchor="" x="946.32" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (298 samples, 0.37%)</title><rect x="1027.5" y="148" width="4.3" height="15.0" fill="rgb(214,6,44)" rx="2" ry="2" />
+<text text-anchor="" x="1030.47" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request_thread (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:639) (329 samples, 0.41%)</title><rect x="1014.4" y="100" width="4.8" height="15.0" fill="rgb(248,132,2)" rx="2" ry="2" />
+<text text-anchor="" x="1017.40" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_response (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/base.py:78) (142 samples, 0.18%)</title><rect x="950.1" y="212" width="2.1" height="15.0" fill="rgb(237,127,20)" rx="2" ry="2" />
+<text text-anchor="" x="953.09" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/sessions/backends/db.py:17) (787 samples, 0.98%)</title><rect x="890.3" y="308" width="11.5" height="15.0" fill="rgb(248,224,22)" rx="2" ry="2" />
+<text text-anchor="" x="893.31" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_content_type (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/message.py:581) (172 samples, 0.21%)</title><rect x="826.4" y="260" width="2.5" height="15.0" fill="rgb(253,71,44)" rx="2" ry="2" />
+<text text-anchor="" x="829.36" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/commands/runserver.py:102) (50,000 samples, 62.02%)</title><rect x="11.2" y="164" width="731.8" height="15.0" fill="rgb(217,126,24)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/manag..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:151) (717 samples, 0.89%)</title><rect x="782.0" y="148" width="10.5" height="15.0" fill="rgb(234,160,34)" rx="2" ry="2" />
+<text text-anchor="" x="785.02" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>wrapper (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:225) (3,960 samples, 4.91%)</title><rect x="1132.0" y="52" width="58.0" height="15.0" fill="rgb(217,26,32)" rx="2" ry="2" />
+<text text-anchor="" x="1135.04" y="62.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >wrappe..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send_preamble (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:260) (213 samples, 0.26%)</title><rect x="986.2" y="228" width="3.1" height="15.0" fill="rgb(247,153,41)" rx="2" ry="2" />
+<text text-anchor="" x="989.20" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_bootstrap_inner (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:916) (344 samples, 0.43%)</title><rect x="1014.4" y="68" width="5.0" height="15.0" fill="rgb(242,207,29)" rx="2" ry="2" />
+<text text-anchor="" x="1017.40" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (150 samples, 0.19%)</title><rect x="1086.8" y="228" width="2.2" height="15.0" fill="rgb(241,194,53)" rx="2" ry="2" />
+<text text-anchor="" x="1089.81" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reset_queries (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/__init__.py:50) (268 samples, 0.33%)</title><rect x="842.4" y="244" width="3.9" height="15.0" fill="rgb(236,197,50)" rx="2" ry="2" />
+<text text-anchor="" x="845.40" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>execute (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/commands/runserver.py:60) (50,000 samples, 62.02%)</title><rect x="11.2" y="116" width="731.8" height="15.0" fill="rgb(246,170,7)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >execute (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/m..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>set (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:521) (401 samples, 0.50%)</title><rect x="1005.5" y="84" width="5.8" height="15.0" fill="rgb(211,223,12)" rx="2" ry="2" />
+<text text-anchor="" x="1008.47" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>makefile (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socket.py:255) (158 samples, 0.20%)</title><rect x="993.2" y="164" width="2.3" height="15.0" fill="rgb(248,204,1)" rx="2" ry="2" />
+<text text-anchor="" x="996.21" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:57) (316 samples, 0.39%)</title><rect x="810.5" y="212" width="4.6" height="15.0" fill="rgb(240,15,5)" rx="2" ry="2" />
+<text text-anchor="" x="813.51" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/simple_server.py:38) (188 samples, 0.23%)</title><rect x="999.2" y="196" width="2.8" height="15.0" fill="rgb(239,110,33)" rx="2" ry="2" />
+<text text-anchor="" x="1002.24" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (204 samples, 0.25%)</title><rect x="1089.3" y="276" width="3.0" height="15.0" fill="rgb(245,180,9)" rx="2" ry="2" />
+<text text-anchor="" x="1092.30" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (1,313 samples, 1.63%)</title><rect x="1035.5" y="148" width="19.2" height="15.0" fill="rgb(210,156,15)" rx="2" ry="2" />
+<text text-anchor="" x="1038.49" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>notify_all (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:364) (237 samples, 0.29%)</title><rect x="1007.9" y="100" width="3.4" height="15.0" fill="rgb(226,52,31)" rx="2" ry="2" />
+<text text-anchor="" x="1010.87" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:698) (169 samples, 0.21%)</title><rect x="1002.6" y="132" width="2.5" height="15.0" fill="rgb(206,170,8)" rx="2" ry="2" />
+<text text-anchor="" x="1005.65" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>log_message (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:124) (155 samples, 0.19%)</title><rect x="996.5" y="228" width="2.3" height="15.0" fill="rgb(205,211,35)" rx="2" ry="2" />
+<text text-anchor="" x="999.51" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_handle_request_noblock (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:325) (282 samples, 0.35%)</title><rect x="1135.7" y="116" width="4.2" height="15.0" fill="rgb(207,128,25)" rx="2" ry="2" />
+<text text-anchor="" x="1138.74" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (184 samples, 0.23%)</title><rect x="1092.3" y="308" width="2.7" height="15.0" fill="rgb(251,16,3)" rx="2" ry="2" />
+<text text-anchor="" x="1095.31" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_log (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/logging/__init__.py:1442) (504 samples, 0.63%)</title><rect x="1047.0" y="260" width="7.4" height="15.0" fill="rgb(228,30,12)" rx="2" ry="2" />
+<text text-anchor="" x="1050.00" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request_thread (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:639) (16,992 samples, 21.08%)</title><rect x="750.1" y="100" width="248.7" height="15.0" fill="rgb(244,210,21)" rx="2" ry="2" />
+<text text-anchor="" x="753.09" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >process_request_thread (/usr/loca..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/simple_server.py:38) (195 samples, 0.24%)</title><rect x="1011.4" y="196" width="2.9" height="15.0" fill="rgb(244,182,50)" rx="2" ry="2" />
+<text text-anchor="" x="1014.44" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:333) (521 samples, 0.65%)</title><rect x="981.7" y="212" width="7.6" height="15.0" fill="rgb(247,5,45)" rx="2" ry="2" />
+<text text-anchor="" x="984.69" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:175) (2,200 samples, 2.73%)</title><rect x="902.6" y="228" width="32.2" height="15.0" fill="rgb(250,202,39)" rx="2" ry="2" />
+<text text-anchor="" x="905.59" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >&lt;l..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/wsgi.py:141) (216 samples, 0.27%)</title><rect x="851.0" y="196" width="3.1" height="15.0" fill="rgb(205,101,46)" rx="2" ry="2" />
+<text text-anchor="" x="853.98" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (142 samples, 0.18%)</title><rect x="950.1" y="260" width="2.1" height="15.0" fill="rgb(230,193,1)" rx="2" ry="2" />
+<text text-anchor="" x="953.09" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reset_queries (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/__init__.py:51) (240 samples, 0.30%)</title><rect x="931.3" y="244" width="3.5" height="15.0" fill="rgb(233,207,46)" rx="2" ry="2" />
+<text text-anchor="" x="934.28" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (215 samples, 0.27%)</title><rect x="1078.7" y="180" width="3.2" height="15.0" fill="rgb(216,202,39)" rx="2" ry="2" />
+<text text-anchor="" x="1081.72" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:361) (202 samples, 0.25%)</title><rect x="1011.4" y="116" width="2.9" height="15.0" fill="rgb(242,109,25)" rx="2" ry="2" />
+<text text-anchor="" x="1014.36" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:138) (3,177 samples, 3.94%)</title><rect x="942.8" y="164" width="46.5" height="15.0" fill="rgb(212,43,37)" rx="2" ry="2" />
+<text text-anchor="" x="945.81" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (150 samples, 0.19%)</title><rect x="1086.8" y="244" width="2.2" height="15.0" fill="rgb(241,82,37)" rx="2" ry="2" />
+<text text-anchor="" x="1089.81" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (229 samples, 0.28%)</title><rect x="1020.8" y="180" width="3.3" height="15.0" fill="rgb(211,9,39)" rx="2" ry="2" />
+<text text-anchor="" x="1023.80" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;module&gt; (manage.py:15) (50,000 samples, 62.02%)</title><rect x="11.2" y="52" width="731.8" height="15.0" fill="rgb(239,94,52)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="62.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >&lt;module&gt; (manage.py:15)</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/client.py:215) (220 samples, 0.27%)</title><rect x="789.3" y="180" width="3.2" height="15.0" fill="rgb(209,92,33)" rx="2" ry="2" />
+<text text-anchor="" x="792.28" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/wsgi.py:150) (232 samples, 0.29%)</title><rect x="949.2" y="196" width="3.4" height="15.0" fill="rgb(242,186,37)" rx="2" ry="2" />
+<text text-anchor="" x="952.19" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>accept (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socket.py:210) (176 samples, 0.22%)</title><rect x="1151.9" y="148" width="2.5" height="15.0" fill="rgb(248,3,33)" rx="2" ry="2" />
+<text text-anchor="" x="1154.87" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>import_string (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/module_loading.py:20) (317 samples, 0.39%)</title><rect x="1121.3" y="196" width="4.6" height="15.0" fill="rgb(247,66,7)" rx="2" ry="2" />
+<text text-anchor="" x="1124.29" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:138) (297 samples, 0.37%)</title><rect x="1027.5" y="164" width="4.3" height="15.0" fill="rgb(253,68,37)" rx="2" ry="2" />
+<text text-anchor="" x="1030.49" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:650) (228 samples, 0.28%)</title><rect x="1136.5" y="132" width="3.4" height="15.0" fill="rgb(241,136,47)" rx="2" ry="2" />
+<text text-anchor="" x="1139.53" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>serve_forever (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:236) (536 samples, 0.66%)</title><rect x="1132.1" y="100" width="7.8" height="15.0" fill="rgb(247,75,38)" rx="2" ry="2" />
+<text text-anchor="" x="1135.05" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/middleware.py:12) (150 samples, 0.19%)</title><rect x="1090.1" y="292" width="2.2" height="15.0" fill="rgb(237,188,43)" rx="2" ry="2" />
+<text text-anchor="" x="1093.09" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:324) (236 samples, 0.29%)</title><rect x="1042.0" y="212" width="3.4" height="15.0" fill="rgb(245,33,12)" rx="2" ry="2" />
+<text text-anchor="" x="1044.99" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/wsgi.py:140) (876 samples, 1.09%)</title><rect x="838.2" y="196" width="12.8" height="15.0" fill="rgb(230,158,17)" rx="2" ry="2" />
+<text text-anchor="" x="841.16" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (201 samples, 0.25%)</title><rect x="931.8" y="276" width="3.0" height="15.0" fill="rgb(249,161,11)" rx="2" ry="2" />
+<text text-anchor="" x="934.85" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (1,539 samples, 1.91%)</title><rect x="1086.8" y="196" width="22.5" height="15.0" fill="rgb(205,122,38)" rx="2" ry="2" />
+<text text-anchor="" x="1089.80" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >i..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:650) (1,767 samples, 2.19%)</title><rect x="1163.5" y="132" width="25.9" height="15.0" fill="rgb(214,53,7)" rx="2" ry="2" />
+<text text-anchor="" x="1166.52" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_gcd_import (&lt;frozen importlib._bootstrap&gt;:994) (316 samples, 0.39%)</title><rect x="1121.3" y="228" width="4.6" height="15.0" fill="rgb(220,96,47)" rx="2" ry="2" />
+<text text-anchor="" x="1124.31" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (151 samples, 0.19%)</title><rect x="1086.8" y="212" width="2.2" height="15.0" fill="rgb(213,172,34)" rx="2" ry="2" />
+<text text-anchor="" x="1089.81" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/middleware/common.py:60) (271 samples, 0.34%)</title><rect x="883.7" y="324" width="3.9" height="15.0" fill="rgb(209,67,28)" rx="2" ry="2" />
+<text text-anchor="" x="886.66" y="334.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (895 samples, 1.11%)</title><rect x="874.5" y="308" width="13.1" height="15.0" fill="rgb(220,132,10)" rx="2" ry="2" />
+<text text-anchor="" x="877.53" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:361) (16,977 samples, 21.06%)</title><rect x="750.3" y="116" width="248.5" height="15.0" fill="rgb(220,34,13)" rx="2" ry="2" />
+<text text-anchor="" x="753.29" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >finish_request (/usr/local/Cellar..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_response (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/base.py:78) (2,665 samples, 3.31%)</title><rect x="863.6" y="212" width="39.0" height="15.0" fill="rgb(222,204,21)" rx="2" ry="2" />
+<text text-anchor="" x="866.58" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >get..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:173) (3,960 samples, 4.91%)</title><rect x="1132.0" y="84" width="58.0" height="15.0" fill="rgb(238,22,20)" rx="2" ry="2" />
+<text text-anchor="" x="1135.04" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run (/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>main (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:323) (50,000 samples, 62.02%)</title><rect x="11.2" y="180" width="731.8" height="15.0" fill="rgb(220,112,33)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >main (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/aut..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (214 samples, 0.27%)</title><rect x="995.7" y="180" width="3.1" height="15.0" fill="rgb(252,170,11)" rx="2" ry="2" />
+<text text-anchor="" x="998.65" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:361) (240 samples, 0.30%)</title><rect x="1020.6" y="116" width="3.5" height="15.0" fill="rgb(229,47,45)" rx="2" ry="2" />
+<text text-anchor="" x="1023.64" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>shutdown_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:510) (175 samples, 0.22%)</title><rect x="1057.4" y="116" width="2.6" height="15.0" fill="rgb(241,135,54)" rx="2" ry="2" />
+<text text-anchor="" x="1060.40" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (199 samples, 0.25%)</title><rect x="943.3" y="292" width="2.9" height="15.0" fill="rgb(209,131,30)" rx="2" ry="2" />
+<text text-anchor="" x="946.32" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:864) (344 samples, 0.43%)</title><rect x="1014.4" y="84" width="5.0" height="15.0" fill="rgb(228,0,30)" rx="2" ry="2" />
+<text text-anchor="" x="1017.40" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (190 samples, 0.24%)</title><rect x="999.2" y="180" width="2.8" height="15.0" fill="rgb(222,218,31)" rx="2" ry="2" />
+<text text-anchor="" x="1002.22" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>resolve (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/urls/resolvers.py:347) (177 samples, 0.22%)</title><rect x="1128.3" y="132" width="2.6" height="15.0" fill="rgb(213,14,46)" rx="2" ry="2" />
+<text text-anchor="" x="1131.26" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (240 samples, 0.30%)</title><rect x="1020.6" y="148" width="3.5" height="15.0" fill="rgb(209,156,44)" rx="2" ry="2" />
+<text text-anchor="" x="1023.64" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:696) (240 samples, 0.30%)</title><rect x="1020.6" y="132" width="3.5" height="15.0" fill="rgb(235,223,23)" rx="2" ry="2" />
+<text text-anchor="" x="1023.64" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_gcd_import (&lt;frozen importlib._bootstrap&gt;:994) (469 samples, 0.58%)</title><rect x="895.0" y="372" width="6.8" height="15.0" fill="rgb(235,73,38)" rx="2" ry="2" />
+<text text-anchor="" x="897.96" y="382.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>log_message (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:124) (146 samples, 0.18%)</title><rect x="1035.7" y="228" width="2.2" height="15.0" fill="rgb(218,153,12)" rx="2" ry="2" />
+<text text-anchor="" x="1038.74" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:280) (212 samples, 0.26%)</title><rect x="1028.7" y="196" width="3.1" height="15.0" fill="rgb(210,121,44)" rx="2" ry="2" />
+<text text-anchor="" x="1031.73" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/client.py:215) (155 samples, 0.19%)</title><rect x="785.0" y="180" width="2.2" height="15.0" fill="rgb(251,86,52)" rx="2" ry="2" />
+<text text-anchor="" x="787.97" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:851) (210 samples, 0.26%)</title><rect x="1186.3" y="148" width="3.1" height="15.0" fill="rgb(246,174,33)" rx="2" ry="2" />
+<text text-anchor="" x="1189.31" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:94) (3,566 samples, 4.42%)</title><rect x="1075.6" y="148" width="52.2" height="15.0" fill="rgb(243,123,45)" rx="2" ry="2" />
+<text text-anchor="" x="1078.60" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__cal..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (184 samples, 0.23%)</title><rect x="1092.3" y="244" width="2.7" height="15.0" fill="rgb(243,201,28)" rx="2" ry="2" />
+<text text-anchor="" x="1095.31" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_environ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:135) (919 samples, 1.14%)</title><rect x="794.5" y="164" width="13.5" height="15.0" fill="rgb(206,112,26)" rx="2" ry="2" />
+<text text-anchor="" x="797.52" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>import_module (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/importlib/__init__.py:126) (477 samples, 0.59%)</title><rect x="894.8" y="356" width="7.0" height="15.0" fill="rgb(216,196,30)" rx="2" ry="2" />
+<text text-anchor="" x="897.85" y="366.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request_thread (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:643) (206 samples, 0.26%)</title><rect x="1011.4" y="100" width="3.0" height="15.0" fill="rgb(244,198,18)" rx="2" ry="2" />
+<text text-anchor="" x="1014.36" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/http/response.py:252) (199 samples, 0.25%)</title><rect x="1042.5" y="228" width="2.9" height="15.0" fill="rgb(222,81,5)" rx="2" ry="2" />
+<text text-anchor="" x="1045.53" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_find_and_load (&lt;frozen importlib._bootstrap&gt;:979) (314 samples, 0.39%)</title><rect x="1121.3" y="244" width="4.6" height="15.0" fill="rgb(224,189,14)" rx="2" ry="2" />
+<text text-anchor="" x="1124.32" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_bootstrap (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:884) (18,516 samples, 22.97%)</title><rect x="743.4" y="52" width="271.0" height="15.0" fill="rgb(207,157,43)" rx="2" ry="2" />
+<text text-anchor="" x="746.35" y="62.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_bootstrap (/usr/local/Cellar/python..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>setup_environ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:166) (198 samples, 0.25%)</title><rect x="939.9" y="180" width="2.9" height="15.0" fill="rgb(210,89,37)" rx="2" ry="2" />
+<text text-anchor="" x="942.91" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/sessions/middleware.py:20) (969 samples, 1.20%)</title><rect x="887.6" y="292" width="14.2" height="15.0" fill="rgb(237,180,26)" rx="2" ry="2" />
+<text text-anchor="" x="890.64" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_find_and_load (&lt;frozen importlib._bootstrap&gt;:979) (340 samples, 0.42%)</title><rect x="896.6" y="388" width="5.0" height="15.0" fill="rgb(215,22,5)" rx="2" ry="2" />
+<text text-anchor="" x="899.59" y="398.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/server.py:357) (1,893 samples, 2.35%)</title><rect x="808.0" y="164" width="27.7" height="15.0" fill="rgb(254,88,35)" rx="2" ry="2" />
+<text text-anchor="" x="810.98" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>serve_forever (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:238) (3,399 samples, 4.22%)</title><rect x="1139.9" y="100" width="49.7" height="15.0" fill="rgb(211,102,48)" rx="2" ry="2" />
+<text text-anchor="" x="1142.90" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >serve..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_parsegen (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:469) (541 samples, 0.67%)</title><rect x="1063.1" y="52" width="7.9" height="15.0" fill="rgb(227,111,26)" rx="2" ry="2" />
+<text text-anchor="" x="1066.10" y="62.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/client.py:215) (1,817 samples, 2.25%)</title><rect x="809.1" y="180" width="26.6" height="15.0" fill="rgb(219,170,6)" rx="2" ry="2" />
+<text text-anchor="" x="812.09" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>load_backend (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:110) (873 samples, 1.08%)</title><rect x="910.7" y="308" width="12.8" height="15.0" fill="rgb(214,15,53)" rx="2" ry="2" />
+<text text-anchor="" x="913.71" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (198 samples, 0.25%)</title><rect x="1011.4" y="180" width="2.9" height="15.0" fill="rgb(205,188,4)" rx="2" ry="2" />
+<text text-anchor="" x="1014.41" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (13,508 samples, 16.76%)</title><rect x="792.6" y="148" width="197.7" height="15.0" fill="rgb(221,136,53)" rx="2" ry="2" />
+<text text-anchor="" x="795.56" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >handle (/Users/callistoiv..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>family (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socket.py:433) (169 samples, 0.21%)</title><rect x="1157.0" y="164" width="2.4" height="15.0" fill="rgb(217,149,29)" rx="2" ry="2" />
+<text text-anchor="" x="1159.96" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:145) (1,023 samples, 1.27%)</title><rect x="1039.7" y="164" width="15.0" height="15.0" fill="rgb(205,0,2)" rx="2" ry="2" />
+<text text-anchor="" x="1042.74" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send_preamble (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:255) (216 samples, 0.27%)</title><rect x="965.0" y="228" width="3.1" height="15.0" fill="rgb(228,58,34)" rx="2" ry="2" />
+<text text-anchor="" x="967.99" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>exists (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/genericpath.py:19) (1,570 samples, 1.95%)</title><rect x="13.7" y="276" width="23.0" height="15.0" fill="rgb(214,218,16)" rx="2" ry="2" />
+<text text-anchor="" x="16.67" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >e..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request_thread (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:639) (240 samples, 0.30%)</title><rect x="1020.6" y="100" width="3.5" height="15.0" fill="rgb(252,135,40)" rx="2" ry="2" />
+<text text-anchor="" x="1023.64" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:696) (16,640 samples, 20.64%)</title><rect x="752.0" y="132" width="243.5" height="15.0" fill="rgb(240,104,17)" rx="2" ry="2" />
+<text text-anchor="" x="754.96" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__init__ (/usr/local/Cellar/pyth..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/middleware/common.py:52) (356 samples, 0.44%)</title><rect x="869.2" y="324" width="5.2" height="15.0" fill="rgb(220,117,44)" rx="2" ry="2" />
+<text text-anchor="" x="872.22" y="334.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:145) (191 samples, 0.24%)</title><rect x="999.2" y="164" width="2.8" height="15.0" fill="rgb(238,41,17)" rx="2" ry="2" />
+<text text-anchor="" x="1002.21" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_gcd_import (&lt;frozen importlib._bootstrap&gt;:994) (869 samples, 1.08%)</title><rect x="910.8" y="340" width="12.7" height="15.0" fill="rgb(231,43,35)" rx="2" ry="2" />
+<text text-anchor="" x="913.77" y="350.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:698) (223 samples, 0.28%)</title><rect x="995.5" y="132" width="3.3" height="15.0" fill="rgb(213,158,53)" rx="2" ry="2" />
+<text text-anchor="" x="998.52" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>log_message (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:124) (619 samples, 0.77%)</title><rect x="1045.5" y="228" width="9.1" height="15.0" fill="rgb(246,141,47)" rx="2" ry="2" />
+<text text-anchor="" x="1048.53" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request_thread (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:643) (171 samples, 0.21%)</title><rect x="1002.6" y="100" width="2.6" height="15.0" fill="rgb(234,159,21)" rx="2" ry="2" />
+<text text-anchor="" x="1005.65" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (281 samples, 0.35%)</title><rect x="943.3" y="260" width="4.1" height="15.0" fill="rgb(214,174,51)" rx="2" ry="2" />
+<text text-anchor="" x="946.32" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:175) (318 samples, 0.39%)</title><rect x="841.7" y="228" width="4.6" height="15.0" fill="rgb(226,196,42)" rx="2" ry="2" />
+<text text-anchor="" x="844.67" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run_from_argv (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/base.py:316) (50,000 samples, 62.02%)</title><rect x="11.2" y="100" width="731.8" height="15.0" fill="rgb(208,94,25)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run_from_argv (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (1,643 samples, 2.04%)</title><rect x="903.9" y="260" width="24.0" height="15.0" fill="rgb(245,121,33)" rx="2" ry="2" />
+<text text-anchor="" x="906.88" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >a..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (212 samples, 0.26%)</title><rect x="843.2" y="276" width="3.1" height="15.0" fill="rgb(212,151,20)" rx="2" ry="2" />
+<text text-anchor="" x="846.18" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (142 samples, 0.18%)</title><rect x="950.1" y="276" width="2.1" height="15.0" fill="rgb(252,33,35)" rx="2" ry="2" />
+<text text-anchor="" x="953.09" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (137 samples, 0.17%)</title><rect x="950.1" y="308" width="2.0" height="15.0" fill="rgb(210,227,29)" rx="2" ry="2" />
+<text text-anchor="" x="953.09" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>make_bytes (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/http/response.py:236) (144 samples, 0.18%)</title><rect x="1116.5" y="244" width="2.1" height="15.0" fill="rgb(214,176,24)" rx="2" ry="2" />
+<text text-anchor="" x="1119.48" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:761) (194 samples, 0.24%)</title><rect x="1032.6" y="148" width="2.9" height="15.0" fill="rgb(227,36,52)" rx="2" ry="2" />
+<text text-anchor="" x="1035.64" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>header_fetch_parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/_policybase.py:316) (148 samples, 0.18%)</title><rect x="801.9" y="228" width="2.2" height="15.0" fill="rgb(226,226,14)" rx="2" ry="2" />
+<text text-anchor="" x="804.89" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>clean_files (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:138) (1,789 samples, 2.22%)</title><rect x="12.2" y="260" width="26.2" height="15.0" fill="rgb(241,148,3)" rx="2" ry="2" />
+<text text-anchor="" x="15.17" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>info (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/logging/__init__.py:1306) (155 samples, 0.19%)</title><rect x="996.5" y="244" width="2.3" height="15.0" fill="rgb(207,132,50)" rx="2" ry="2" />
+<text text-anchor="" x="999.51" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:175) (166 samples, 0.21%)</title><rect x="1043.0" y="244" width="2.4" height="15.0" fill="rgb(246,78,32)" rx="2" ry="2" />
+<text text-anchor="" x="1046.02" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_handle_request_noblock (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:312) (186 samples, 0.23%)</title><rect x="1140.3" y="116" width="2.7" height="15.0" fill="rgb(230,117,47)" rx="2" ry="2" />
+<text text-anchor="" x="1143.32" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (167 samples, 0.21%)</title><rect x="1002.7" y="180" width="2.4" height="15.0" fill="rgb(249,165,52)" rx="2" ry="2" />
+<text text-anchor="" x="1005.68" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (4,087 samples, 5.07%)</title><rect x="1072.2" y="68" width="59.8" height="15.0" fill="rgb(246,76,12)" rx="2" ry="2" />
+<text text-anchor="" x="1075.20" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >inner ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (1,016 samples, 1.26%)</title><rect x="1039.8" y="180" width="14.9" height="15.0" fill="rgb(220,32,52)" rx="2" ry="2" />
+<text text-anchor="" x="1042.84" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (329 samples, 0.41%)</title><rect x="1014.4" y="148" width="4.8" height="15.0" fill="rgb(250,59,5)" rx="2" ry="2" />
+<text text-anchor="" x="1017.40" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:696) (299 samples, 0.37%)</title><rect x="1027.5" y="132" width="4.3" height="15.0" fill="rgb(223,226,34)" rx="2" ry="2" />
+<text text-anchor="" x="1030.46" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (169 samples, 0.21%)</title><rect x="1002.6" y="148" width="2.5" height="15.0" fill="rgb(254,40,16)" rx="2" ry="2" />
+<text text-anchor="" x="1005.65" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (193 samples, 0.24%)</title><rect x="1075.7" y="164" width="2.9" height="15.0" fill="rgb(211,75,51)" rx="2" ry="2" />
+<text text-anchor="" x="1078.73" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:332) (426 samples, 0.53%)</title><rect x="962.2" y="212" width="6.2" height="15.0" fill="rgb(223,129,32)" rx="2" ry="2" />
+<text text-anchor="" x="965.16" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/server.py:357) (270 samples, 0.33%)</title><rect x="788.6" y="164" width="3.9" height="15.0" fill="rgb(242,93,17)" rx="2" ry="2" />
+<text text-anchor="" x="791.55" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (184 samples, 0.23%)</title><rect x="1092.3" y="276" width="2.7" height="15.0" fill="rgb(226,143,25)" rx="2" ry="2" />
+<text text-anchor="" x="1095.31" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:274) (509 samples, 0.63%)</title><rect x="961.5" y="196" width="7.5" height="15.0" fill="rgb(214,190,37)" rx="2" ry="2" />
+<text text-anchor="" x="964.50" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close_old_connections (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/__init__.py:61) (1,679 samples, 2.08%)</title><rect x="903.4" y="244" width="24.6" height="15.0" fill="rgb(221,20,39)" rx="2" ry="2" />
+<text text-anchor="" x="906.44" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:94) (454 samples, 0.56%)</title><rect x="1099.2" y="276" width="6.7" height="15.0" fill="rgb(231,95,29)" rx="2" ry="2" />
+<text text-anchor="" x="1102.22" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/commands/runserver.py:95) (50,000 samples, 62.02%)</title><rect x="11.2" y="148" width="731.8" height="15.0" fill="rgb(237,150,40)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/ma..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>import_module (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/importlib/__init__.py:126) (317 samples, 0.39%)</title><rect x="1121.3" y="212" width="4.6" height="15.0" fill="rgb(248,113,42)" rx="2" ry="2" />
+<text text-anchor="" x="1124.29" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:94) (4,087 samples, 5.07%)</title><rect x="1072.2" y="84" width="59.8" height="15.0" fill="rgb(225,151,43)" rx="2" ry="2" />
+<text text-anchor="" x="1075.20" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__call..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:57) (151 samples, 0.19%)</title><rect x="785.0" y="212" width="2.2" height="15.0" fill="rgb(212,219,42)" rx="2" ry="2" />
+<text text-anchor="" x="788.01" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (1,606 samples, 1.99%)</title><rect x="904.2" y="276" width="23.5" height="15.0" fill="rgb(209,113,5)" rx="2" ry="2" />
+<text text-anchor="" x="907.23" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >&lt;..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/backends/base/base.py:106) (152 samples, 0.19%)</title><rect x="908.0" y="308" width="2.3" height="15.0" fill="rgb(216,149,49)" rx="2" ry="2" />
+<text text-anchor="" x="911.03" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>resolve (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/urls/resolvers.py:517) (4,072 samples, 5.05%)</title><rect x="1072.4" y="116" width="59.6" height="15.0" fill="rgb(225,171,31)" rx="2" ry="2" />
+<text text-anchor="" x="1075.39" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >resolv..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:90) (138 samples, 0.17%)</title><rect x="865.7" y="276" width="2.1" height="15.0" fill="rgb(209,23,22)" rx="2" ry="2" />
+<text text-anchor="" x="868.73" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>code_changed (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:204) (1,737 samples, 2.15%)</title><rect x="38.5" y="228" width="25.4" height="15.0" fill="rgb(235,121,2)" rx="2" ry="2" />
+<text text-anchor="" x="41.47" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:500) (170 samples, 0.21%)</title><rect x="1140.6" y="132" width="2.4" height="15.0" fill="rgb(206,163,50)" rx="2" ry="2" />
+<text text-anchor="" x="1143.56" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:361) (169 samples, 0.21%)</title><rect x="1002.6" y="116" width="2.5" height="15.0" fill="rgb(227,143,43)" rx="2" ry="2" />
+<text text-anchor="" x="1005.65" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (229 samples, 0.28%)</title><rect x="1083.4" y="196" width="3.4" height="15.0" fill="rgb(206,47,42)" rx="2" ry="2" />
+<text text-anchor="" x="1086.44" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>header_source_parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/_policybase.py:303) (153 samples, 0.19%)</title><rect x="1066.4" y="84" width="2.2" height="15.0" fill="rgb(224,209,53)" rx="2" ry="2" />
+<text text-anchor="" x="1069.41" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (294 samples, 0.36%)</title><rect x="1027.5" y="180" width="4.3" height="15.0" fill="rgb(211,127,24)" rx="2" ry="2" />
+<text text-anchor="" x="1030.53" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:361) (217 samples, 0.27%)</title><rect x="998.8" y="116" width="3.2" height="15.0" fill="rgb(219,150,9)" rx="2" ry="2" />
+<text text-anchor="" x="1001.83" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>resolve (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/urls/resolvers.py:517) (4,088 samples, 5.07%)</title><rect x="1072.2" y="52" width="59.8" height="15.0" fill="rgb(219,164,37)" rx="2" ry="2" />
+<text text-anchor="" x="1075.20" y="62.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >resolv..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/client.py:215) (467 samples, 0.58%)</title><rect x="767.3" y="180" width="6.9" height="15.0" fill="rgb(237,225,44)" rx="2" ry="2" />
+<text text-anchor="" x="770.33" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_response (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/base.py:78) (281 samples, 0.35%)</title><rect x="943.3" y="212" width="4.1" height="15.0" fill="rgb(208,145,28)" rx="2" ry="2" />
+<text text-anchor="" x="946.32" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parsestr (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:68) (216 samples, 0.27%)</title><rect x="789.3" y="196" width="3.2" height="15.0" fill="rgb(243,95,14)" rx="2" ry="2" />
+<text text-anchor="" x="792.34" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__getitem__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:197) (1,269 samples, 1.57%)</title><rect x="904.9" y="292" width="18.6" height="15.0" fill="rgb(237,59,18)" rx="2" ry="2" />
+<text text-anchor="" x="907.92" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (184 samples, 0.23%)</title><rect x="1092.3" y="292" width="2.7" height="15.0" fill="rgb(229,188,54)" rx="2" ry="2" />
+<text text-anchor="" x="1095.31" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_environ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/simple_server.py:110) (500 samples, 0.62%)</title><rect x="797.0" y="180" width="7.3" height="15.0" fill="rgb(240,35,21)" rx="2" ry="2" />
+<text text-anchor="" x="799.97" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>import_module (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/importlib/__init__.py:126) (872 samples, 1.08%)</title><rect x="910.7" y="324" width="12.8" height="15.0" fill="rgb(210,173,2)" rx="2" ry="2" />
+<text text-anchor="" x="913.73" y="334.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/sessions/backends/base.py:49) (738 samples, 0.92%)</title><rect x="891.0" y="324" width="10.8" height="15.0" fill="rgb(236,130,21)" rx="2" ry="2" />
+<text text-anchor="" x="894.03" y="334.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (223 samples, 0.28%)</title><rect x="928.0" y="276" width="3.3" height="15.0" fill="rgb(226,71,51)" rx="2" ry="2" />
+<text text-anchor="" x="931.01" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_parse_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:529) (228 samples, 0.28%)</title><rect x="1065.7" y="68" width="3.4" height="15.0" fill="rgb(222,123,49)" rx="2" ry="2" />
+<text text-anchor="" x="1068.75" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>resolve (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/urls/resolvers.py:347) (164 samples, 0.20%)</title><rect x="878.7" y="340" width="2.4" height="15.0" fill="rgb(231,106,40)" rx="2" ry="2" />
+<text text-anchor="" x="881.75" y="350.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:94) (236 samples, 0.29%)</title><rect x="1100.8" y="308" width="3.4" height="15.0" fill="rgb(214,25,28)" rx="2" ry="2" />
+<text text-anchor="" x="1103.79" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (223 samples, 0.28%)</title><rect x="928.0" y="260" width="3.3" height="15.0" fill="rgb(225,157,9)" rx="2" ry="2" />
+<text text-anchor="" x="931.01" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/server.py:329) (769 samples, 0.95%)</title><rect x="762.9" y="164" width="11.3" height="15.0" fill="rgb(249,17,25)" rx="2" ry="2" />
+<text text-anchor="" x="765.91" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/simple_server.py:38) (214 samples, 0.27%)</title><rect x="995.7" y="196" width="3.1" height="15.0" fill="rgb(209,26,1)" rx="2" ry="2" />
+<text text-anchor="" x="998.65" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:864) (17,265 samples, 21.42%)</title><rect x="749.9" y="84" width="252.7" height="15.0" fill="rgb(242,94,13)" rx="2" ry="2" />
+<text text-anchor="" x="752.93" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run (/usr/local/Cellar/python/3.6..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (278 samples, 0.34%)</title><rect x="1035.7" y="180" width="4.0" height="15.0" fill="rgb(239,8,18)" rx="2" ry="2" />
+<text text-anchor="" x="1038.67" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/middleware.py:12) (150 samples, 0.19%)</title><rect x="1084.6" y="228" width="2.2" height="15.0" fill="rgb(222,159,14)" rx="2" ry="2" />
+<text text-anchor="" x="1087.60" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_handle_request_noblock (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:317) (3,156 samples, 3.91%)</title><rect x="1143.2" y="116" width="46.2" height="15.0" fill="rgb(222,214,22)" rx="2" ry="2" />
+<text text-anchor="" x="1146.22" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_han..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:94) (878 samples, 1.09%)</title><rect x="1095.9" y="244" width="12.8" height="15.0" fill="rgb(240,54,14)" rx="2" ry="2" />
+<text text-anchor="" x="1098.87" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (3,721 samples, 4.62%)</title><rect x="1073.3" y="132" width="54.5" height="15.0" fill="rgb(233,169,36)" rx="2" ry="2" />
+<text text-anchor="" x="1076.33" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >inner..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_bootstrap_inner (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:964) (207 samples, 0.26%)</title><rect x="1011.3" y="68" width="3.1" height="15.0" fill="rgb(226,158,0)" rx="2" ry="2" />
+<text text-anchor="" x="1014.34" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>accept (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socket.py:205) (410 samples, 0.51%)</title><rect x="1144.2" y="148" width="6.0" height="15.0" fill="rgb(242,135,24)" rx="2" ry="2" />
+<text text-anchor="" x="1147.17" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner_run (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/commands/runserver.py:139) (3,960 samples, 4.91%)</title><rect x="1132.0" y="68" width="58.0" height="15.0" fill="rgb(207,190,5)" rx="2" ry="2" />
+<text text-anchor="" x="1135.04" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >inner_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:138) (282 samples, 0.35%)</title><rect x="1035.6" y="164" width="4.1" height="15.0" fill="rgb(232,81,35)" rx="2" ry="2" />
+<text text-anchor="" x="1038.61" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:94) (1,796 samples, 2.23%)</title><rect x="1083.1" y="180" width="26.3" height="15.0" fill="rgb(230,8,31)" rx="2" ry="2" />
+<text text-anchor="" x="1086.06" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (1,324 samples, 1.64%)</title><rect x="969.9" y="180" width="19.4" height="15.0" fill="rgb(252,38,14)" rx="2" ry="2" />
+<text text-anchor="" x="972.93" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>execute (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/base.py:353) (50,000 samples, 62.02%)</title><rect x="11.2" y="132" width="731.8" height="15.0" fill="rgb(252,182,17)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >execute (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/m..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__getitem__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:202) (179 samples, 0.22%)</title><rect x="932.0" y="292" width="2.6" height="15.0" fill="rgb(235,59,39)" rx="2" ry="2" />
+<text text-anchor="" x="934.98" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_call_parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:180) (366 samples, 0.45%)</title><rect x="829.0" y="244" width="5.3" height="15.0" fill="rgb(219,135,11)" rx="2" ry="2" />
+<text text-anchor="" x="831.95" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>items (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/message.py:460) (243 samples, 0.30%)</title><rect x="800.5" y="196" width="3.6" height="15.0" fill="rgb(215,199,52)" rx="2" ry="2" />
+<text text-anchor="" x="803.50" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:696) (329 samples, 0.41%)</title><rect x="1014.4" y="132" width="4.8" height="15.0" fill="rgb(213,76,52)" rx="2" ry="2" />
+<text text-anchor="" x="1017.40" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request_thread (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:643) (262 samples, 0.32%)</title><rect x="998.8" y="100" width="3.8" height="15.0" fill="rgb(212,143,33)" rx="2" ry="2" />
+<text text-anchor="" x="1001.80" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/simple_server.py:35) (153 samples, 0.19%)</title><rect x="1035.7" y="196" width="2.2" height="15.0" fill="rgb(245,3,52)" rx="2" ry="2" />
+<text text-anchor="" x="1038.67" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:868) (206 samples, 0.26%)</title><rect x="1011.4" y="84" width="3.0" height="15.0" fill="rgb(227,14,33)" rx="2" ry="2" />
+<text text-anchor="" x="1014.36" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/wsgi.py:153) (499 samples, 0.62%)</title><rect x="952.8" y="196" width="7.3" height="15.0" fill="rgb(234,209,17)" rx="2" ry="2" />
+<text text-anchor="" x="955.84" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_content_maintype (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/message.py:595) (227 samples, 0.28%)</title><rect x="825.6" y="244" width="3.3" height="15.0" fill="rgb(240,66,5)" rx="2" ry="2" />
+<text text-anchor="" x="828.56" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (142 samples, 0.18%)</title><rect x="950.1" y="228" width="2.1" height="15.0" fill="rgb(232,72,17)" rx="2" ry="2" />
+<text text-anchor="" x="953.09" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>feed (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:176) (465 samples, 0.58%)</title><rect x="828.9" y="228" width="6.8" height="15.0" fill="rgb(217,186,37)" rx="2" ry="2" />
+<text text-anchor="" x="831.88" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/wsgi.py:98) (239 samples, 0.30%)</title><rect x="860.0" y="212" width="3.5" height="15.0" fill="rgb(233,229,52)" rx="2" ry="2" />
+<text text-anchor="" x="863.03" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:137) (7,275 samples, 9.02%)</title><rect x="836.3" y="164" width="106.5" height="15.0" fill="rgb(231,214,17)" rx="2" ry="2" />
+<text text-anchor="" x="839.33" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >run (/usr/loc..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:139) (428 samples, 0.53%)</title><rect x="752.3" y="148" width="6.2" height="15.0" fill="rgb(232,12,46)" rx="2" ry="2" />
+<text text-anchor="" x="755.27" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:57) (140 samples, 0.17%)</title><rect x="772.1" y="212" width="2.0" height="15.0" fill="rgb(205,207,24)" rx="2" ry="2" />
+<text text-anchor="" x="775.09" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:138) (237 samples, 0.29%)</title><rect x="1020.7" y="164" width="3.4" height="15.0" fill="rgb(245,60,24)" rx="2" ry="2" />
+<text text-anchor="" x="1023.68" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:868) (2,407 samples, 2.99%)</title><rect x="1024.7" y="84" width="35.3" height="15.0" fill="rgb(229,217,49)" rx="2" ry="2" />
+<text text-anchor="" x="1027.73" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >ru..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>shutdown_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:507) (184 samples, 0.23%)</title><rect x="1054.7" y="116" width="2.7" height="15.0" fill="rgb(253,30,51)" rx="2" ry="2" />
+<text text-anchor="" x="1057.71" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>feed (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:176) (232 samples, 0.29%)</title><rect x="811.7" y="228" width="3.4" height="15.0" fill="rgb(254,100,43)" rx="2" ry="2" />
+<text text-anchor="" x="814.74" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:145) (214 samples, 0.27%)</title><rect x="995.7" y="164" width="3.1" height="15.0" fill="rgb(244,68,8)" rx="2" ry="2" />
+<text text-anchor="" x="998.65" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reloader_thread (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:279) (46,369 samples, 57.52%)</title><rect x="64.3" y="212" width="678.7" height="15.0" fill="rgb(218,52,14)" rx="2" ry="2" />
+<text text-anchor="" x="67.33" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >reloader_thread (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packag..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/simple_server.py:38) (975 samples, 1.21%)</title><rect x="1040.3" y="196" width="14.3" height="15.0" fill="rgb(249,92,48)" rx="2" ry="2" />
+<text text-anchor="" x="1043.32" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_storage (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/storage/__init__.py:12) (150 samples, 0.19%)</title><rect x="1084.6" y="244" width="2.2" height="15.0" fill="rgb(205,125,18)" rx="2" ry="2" />
+<text text-anchor="" x="1087.60" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:280) (183 samples, 0.23%)</title><rect x="1021.5" y="196" width="2.6" height="15.0" fill="rgb(244,126,19)" rx="2" ry="2" />
+<text text-anchor="" x="1024.47" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>gen_filenames (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:91) (1,850 samples, 2.29%)</title><rect x="11.4" y="244" width="27.1" height="15.0" fill="rgb(240,14,2)" rx="2" ry="2" />
+<text text-anchor="" x="14.39" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >g..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (202 samples, 0.25%)</title><rect x="999.0" y="148" width="3.0" height="15.0" fill="rgb(233,15,38)" rx="2" ry="2" />
+<text text-anchor="" x="1002.05" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>setup (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:750) (316 samples, 0.39%)</title><rect x="990.9" y="148" width="4.6" height="15.0" fill="rgb(247,96,43)" rx="2" ry="2" />
+<text text-anchor="" x="993.89" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>python_reloader (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:302) (50,000 samples, 62.02%)</title><rect x="11.2" y="196" width="731.8" height="15.0" fill="rgb(232,74,20)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >python_reloader (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/djang..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>import_string (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/module_loading.py:20) (509 samples, 0.63%)</title><rect x="894.4" y="340" width="7.4" height="15.0" fill="rgb(215,80,44)" rx="2" ry="2" />
+<text text-anchor="" x="897.38" y="350.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/staticfiles/handlers.py:65) (1,156 samples, 1.43%)</title><rect x="943.2" y="180" width="16.9" height="15.0" fill="rgb(253,158,42)" rx="2" ry="2" />
+<text text-anchor="" x="946.22" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (239 samples, 0.30%)</title><rect x="842.8" y="260" width="3.5" height="15.0" fill="rgb(208,189,50)" rx="2" ry="2" />
+<text text-anchor="" x="845.83" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (204 samples, 0.25%)</title><rect x="1089.3" y="228" width="3.0" height="15.0" fill="rgb(215,2,18)" rx="2" ry="2" />
+<text text-anchor="" x="1092.30" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>hello_world (/Users/callistoiv/PycharmProjects/untitled/Django-app/demo/views.py:20) (613 samples, 0.76%)</title><rect x="1111.6" y="196" width="8.9" height="15.0" fill="rgb(210,8,40)" rx="2" ry="2" />
+<text text-anchor="" x="1114.56" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__get__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/functional.py:38) (153 samples, 0.19%)</title><rect x="888.1" y="308" width="2.2" height="15.0" fill="rgb(250,206,27)" rx="2" ry="2" />
+<text text-anchor="" x="891.07" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (167 samples, 0.21%)</title><rect x="875.2" y="340" width="2.5" height="15.0" fill="rgb(207,85,42)" rx="2" ry="2" />
+<text text-anchor="" x="878.23" y="350.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:58) (1,404 samples, 1.74%)</title><rect x="815.1" y="212" width="20.6" height="15.0" fill="rgb(250,3,50)" rx="2" ry="2" />
+<text text-anchor="" x="818.13" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_bootstrap_inner (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:964) (2,723 samples, 3.38%)</title><rect x="1020.1" y="68" width="39.9" height="15.0" fill="rgb(247,34,1)" rx="2" ry="2" />
+<text text-anchor="" x="1023.11" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_bo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>readinto (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socket.py:586) (263 samples, 0.33%)</title><rect x="754.0" y="164" width="3.9" height="15.0" fill="rgb(206,57,13)" rx="2" ry="2" />
+<text text-anchor="" x="757.04" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:145) (198 samples, 0.25%)</title><rect x="1011.4" y="164" width="2.9" height="15.0" fill="rgb(249,10,46)" rx="2" ry="2" />
+<text text-anchor="" x="1014.41" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>&lt;listcomp&gt; (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:175) (143 samples, 0.18%)</title><rect x="852.0" y="228" width="2.1" height="15.0" fill="rgb(215,20,5)" rx="2" ry="2" />
+<text text-anchor="" x="855.05" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (2,590 samples, 3.21%)</title><rect x="864.3" y="228" width="37.9" height="15.0" fill="rgb(254,175,18)" rx="2" ry="2" />
+<text text-anchor="" x="867.27" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >inn..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__getitem__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:203) (156 samples, 0.19%)</title><rect x="844.0" y="292" width="2.3" height="15.0" fill="rgb(238,67,37)" rx="2" ry="2" />
+<text text-anchor="" x="847.00" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:698) (1,563 samples, 1.94%)</title><rect x="1031.8" y="132" width="22.9" height="15.0" fill="rgb(230,131,23)" rx="2" ry="2" />
+<text text-anchor="" x="1034.83" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:138) (328 samples, 0.41%)</title><rect x="1014.4" y="164" width="4.8" height="15.0" fill="rgb(252,36,8)" rx="2" ry="2" />
+<text text-anchor="" x="1017.42" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/utils.py:217) (209 samples, 0.26%)</title><rect x="931.7" y="260" width="3.1" height="15.0" fill="rgb(251,32,20)" rx="2" ry="2" />
+<text text-anchor="" x="934.73" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:868) (172 samples, 0.21%)</title><rect x="1002.6" y="84" width="2.6" height="15.0" fill="rgb(232,225,7)" rx="2" ry="2" />
+<text text-anchor="" x="1005.63" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:333) (147 samples, 0.18%)</title><rect x="1017.1" y="212" width="2.1" height="15.0" fill="rgb(229,136,26)" rx="2" ry="2" />
+<text text-anchor="" x="1020.06" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (142 samples, 0.18%)</title><rect x="950.1" y="244" width="2.1" height="15.0" fill="rgb(244,153,28)" rx="2" ry="2" />
+<text text-anchor="" x="953.09" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (577 samples, 0.72%)</title><rect x="1097.4" y="260" width="8.5" height="15.0" fill="rgb(230,42,39)" rx="2" ry="2" />
+<text text-anchor="" x="1100.42" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reset_queries (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/db/__init__.py:50) (223 samples, 0.28%)</title><rect x="928.0" y="244" width="3.3" height="15.0" fill="rgb(242,14,15)" rx="2" ry="2" />
+<text text-anchor="" x="931.01" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>readinto (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socket.py:586) (471 samples, 0.58%)</title><rect x="774.3" y="164" width="6.9" height="15.0" fill="rgb(249,54,25)" rx="2" ry="2" />
+<text text-anchor="" x="777.30" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (184 samples, 0.23%)</title><rect x="1092.3" y="260" width="2.7" height="15.0" fill="rgb(237,49,14)" rx="2" ry="2" />
+<text text-anchor="" x="1095.31" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/wsgi.py:142) (5,510 samples, 6.83%)</title><rect x="854.1" y="196" width="80.7" height="15.0" fill="rgb(251,106,8)" rx="2" ry="2" />
+<text text-anchor="" x="857.14" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__call__ ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:145) (167 samples, 0.21%)</title><rect x="1002.7" y="164" width="2.4" height="15.0" fill="rgb(227,52,6)" rx="2" ry="2" />
+<text text-anchor="" x="1005.68" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:94) (1,374 samples, 1.70%)</title><rect x="1089.2" y="212" width="20.1" height="15.0" fill="rgb(228,114,21)" rx="2" ry="2" />
+<text text-anchor="" x="1092.21" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (1,334 samples, 1.65%)</title><rect x="868.1" y="292" width="19.5" height="15.0" fill="rgb(237,214,49)" rx="2" ry="2" />
+<text text-anchor="" x="871.12" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/simple_server.py:38) (164 samples, 0.20%)</title><rect x="1002.7" y="196" width="2.4" height="15.0" fill="rgb(225,69,49)" rx="2" ry="2" />
+<text text-anchor="" x="1005.68" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_storage (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/storage/__init__.py:12) (164 samples, 0.20%)</title><rect x="1092.6" y="340" width="2.4" height="15.0" fill="rgb(222,31,41)" rx="2" ry="2" />
+<text text-anchor="" x="1095.61" y="350.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:279) (178 samples, 0.22%)</title><rect x="975.4" y="196" width="2.6" height="15.0" fill="rgb(205,158,50)" rx="2" ry="2" />
+<text text-anchor="" x="978.36" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (281 samples, 0.35%)</title><rect x="943.3" y="244" width="4.1" height="15.0" fill="rgb(220,177,49)" rx="2" ry="2" />
+<text text-anchor="" x="946.32" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_bootstrap_inner (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:905) (184 samples, 0.23%)</title><rect x="745.0" y="68" width="2.7" height="15.0" fill="rgb(250,136,36)" rx="2" ry="2" />
+<text text-anchor="" x="748.04" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request_thread (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:643) (2,276 samples, 2.82%)</title><rect x="1026.7" y="100" width="33.3" height="15.0" fill="rgb(233,85,41)" rx="2" ry="2" />
+<text text-anchor="" x="1029.65" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >pr..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/logging/__init__.py:1452) (215 samples, 0.27%)</title><rect x="1047.5" y="276" width="3.2" height="15.0" fill="rgb(219,189,32)" rx="2" ry="2" />
+<text text-anchor="" x="1050.51" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:90) (421 samples, 0.52%)</title><rect x="868.4" y="308" width="6.1" height="15.0" fill="rgb(213,212,51)" rx="2" ry="2" />
+<text text-anchor="" x="871.37" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_bootstrap_inner (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:916) (17,969 samples, 22.29%)</title><rect x="748.3" y="68" width="263.0" height="15.0" fill="rgb(222,169,20)" rx="2" ry="2" />
+<text text-anchor="" x="751.33" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_bootstrap_inner (/usr/local/Cellar..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (1,124 samples, 1.39%)</title><rect x="1092.3" y="228" width="16.4" height="15.0" fill="rgb(212,200,2)" rx="2" ry="2" />
+<text text-anchor="" x="1095.28" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:361) (329 samples, 0.41%)</title><rect x="1014.4" y="116" width="4.8" height="15.0" fill="rgb(220,32,52)" rx="2" ry="2" />
+<text text-anchor="" x="1017.40" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (2,894 samples, 3.59%)</title><rect x="1078.6" y="164" width="42.3" height="15.0" fill="rgb(236,71,33)" rx="2" ry="2" />
+<text text-anchor="" x="1081.55" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >inn..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:238) (153 samples, 0.19%)</title><rect x="957.9" y="212" width="2.2" height="15.0" fill="rgb(235,18,28)" rx="2" ry="2" />
+<text text-anchor="" x="960.90" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:37) (4,085 samples, 5.07%)</title><rect x="1072.2" y="100" width="59.8" height="15.0" fill="rgb(252,107,18)" rx="2" ry="2" />
+<text text-anchor="" x="1075.20" y="110.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >inner ..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (198 samples, 0.25%)</title><rect x="943.3" y="308" width="2.9" height="15.0" fill="rgb(232,167,8)" rx="2" ry="2" />
+<text text-anchor="" x="946.34" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:650) (173 samples, 0.21%)</title><rect x="1133.2" y="132" width="2.5" height="15.0" fill="rgb(224,22,39)" rx="2" ry="2" />
+<text text-anchor="" x="1136.21" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (281 samples, 0.35%)</title><rect x="943.3" y="276" width="4.1" height="15.0" fill="rgb(251,127,35)" rx="2" ry="2" />
+<text text-anchor="" x="946.32" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (2,560 samples, 3.18%)</title><rect x="864.7" y="244" width="37.5" height="15.0" fill="rgb(207,7,27)" rx="2" ry="2" />
+<text text-anchor="" x="867.71" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:175) (606 samples, 0.75%)</title><rect x="840.6" y="212" width="8.9" height="15.0" fill="rgb(251,24,36)" rx="2" ry="2" />
+<text text-anchor="" x="843.65" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:698) (209 samples, 0.26%)</title><rect x="998.9" y="132" width="3.1" height="15.0" fill="rgb(216,134,22)" rx="2" ry="2" />
+<text text-anchor="" x="1001.94" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:500) (217 samples, 0.27%)</title><rect x="1168.5" y="164" width="3.1" height="15.0" fill="rgb(245,121,27)" rx="2" ry="2" />
+<text text-anchor="" x="1171.45" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:175) (2,200 samples, 2.73%)</title><rect x="902.6" y="212" width="32.2" height="15.0" fill="rgb(240,195,44)" rx="2" ry="2" />
+<text text-anchor="" x="905.59" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >se..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_storage (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/storage/__init__.py:12) (343 samples, 0.43%)</title><rect x="1120.9" y="180" width="5.0" height="15.0" fill="rgb(208,187,21)" rx="2" ry="2" />
+<text text-anchor="" x="1123.91" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (2,479 samples, 3.07%)</title><rect x="865.5" y="260" width="36.3" height="15.0" fill="rgb(224,226,20)" rx="2" ry="2" />
+<text text-anchor="" x="868.54" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >inn..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (204 samples, 0.25%)</title><rect x="1089.3" y="244" width="3.0" height="15.0" fill="rgb(226,177,51)" rx="2" ry="2" />
+<text text-anchor="" x="1092.30" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_parsegen (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:466) (214 samples, 0.27%)</title><rect x="1060.0" y="52" width="3.1" height="15.0" fill="rgb(207,22,51)" rx="2" ry="2" />
+<text text-anchor="" x="1062.97" y="62.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:154) (219 samples, 0.27%)</title><rect x="995.6" y="148" width="3.2" height="15.0" fill="rgb(212,140,46)" rx="2" ry="2" />
+<text text-anchor="" x="998.58" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (159 samples, 0.20%)</title><rect x="1075.7" y="180" width="2.4" height="15.0" fill="rgb(239,86,21)" rx="2" ry="2" />
+<text text-anchor="" x="1078.73" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (159 samples, 0.20%)</title><rect x="1075.7" y="196" width="2.4" height="15.0" fill="rgb(250,124,44)" rx="2" ry="2" />
+<text text-anchor="" x="1078.73" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:800) (521 samples, 0.65%)</title><rect x="1166.6" y="148" width="7.6" height="15.0" fill="rgb(238,64,19)" rx="2" ry="2" />
+<text text-anchor="" x="1169.57" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>log_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/server.py:536) (155 samples, 0.19%)</title><rect x="996.5" y="212" width="2.3" height="15.0" fill="rgb(254,72,4)" rx="2" ry="2" />
+<text text-anchor="" x="999.51" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_host (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/http/request.py:99) (188 samples, 0.23%)</title><rect x="870.7" y="340" width="2.8" height="15.0" fill="rgb(249,1,51)" rx="2" ry="2" />
+<text text-anchor="" x="873.72" y="350.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>all (80,618 samples, 100%)</title><rect x="10.0" y="36" width="1180.0" height="15.0" fill="rgb(242,33,46)" rx="2" ry="2" />
+<text text-anchor="" x="13.00" y="46.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send_headers (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:333) (137 samples, 0.17%)</title><rect x="976.0" y="212" width="2.0" height="15.0" fill="rgb(215,93,19)" rx="2" ry="2" />
+<text text-anchor="" x="978.96" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>get_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:500) (1,178 samples, 1.46%)</title><rect x="1144.1" y="132" width="17.2" height="15.0" fill="rgb(246,162,30)" rx="2" ry="2" />
+<text text-anchor="" x="1147.07" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:180) (639 samples, 0.79%)</title><rect x="960.3" y="180" width="9.4" height="15.0" fill="rgb(226,145,29)" rx="2" ry="2" />
+<text text-anchor="" x="963.32" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:57) (179 samples, 0.22%)</title><rect x="789.4" y="212" width="2.7" height="15.0" fill="rgb(237,119,26)" rx="2" ry="2" />
+<text text-anchor="" x="792.43" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>info (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/logging/__init__.py:1306) (611 samples, 0.76%)</title><rect x="1045.7" y="244" width="8.9" height="15.0" fill="rgb(224,27,4)" rx="2" ry="2" />
+<text text-anchor="" x="1048.65" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>default_storage (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/storage/__init__.py:12) (150 samples, 0.19%)</title><rect x="1090.1" y="308" width="2.2" height="15.0" fill="rgb(243,101,7)" rx="2" ry="2" />
+<text text-anchor="" x="1093.09" y="318.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_response (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:183) (297 samples, 0.37%)</title><rect x="1014.9" y="180" width="4.3" height="15.0" fill="rgb(208,190,54)" rx="2" ry="2" />
+<text text-anchor="" x="1017.87" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_log (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/logging/__init__.py:1442) (155 samples, 0.19%)</title><rect x="996.5" y="260" width="2.3" height="15.0" fill="rgb(220,179,38)" rx="2" ry="2" />
+<text text-anchor="" x="999.51" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parsestr (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:68) (1,806 samples, 2.24%)</title><rect x="809.2" y="196" width="26.5" height="15.0" fill="rgb(253,24,54)" rx="2" ry="2" />
+<text text-anchor="" x="812.25" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >p..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>handle (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/servers/basehttp.py:147) (1,568 samples, 1.94%)</title><rect x="759.0" y="148" width="23.0" height="15.0" fill="rgb(212,199,9)" rx="2" ry="2" />
+<text text-anchor="" x="762.04" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >h..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:698) (201 samples, 0.25%)</title><rect x="1011.4" y="132" width="2.9" height="15.0" fill="rgb(237,82,37)" rx="2" ry="2" />
+<text text-anchor="" x="1014.37" y="142.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:280) (236 samples, 0.29%)</title><rect x="1015.8" y="196" width="3.4" height="15.0" fill="rgb(218,62,29)" rx="2" ry="2" />
+<text text-anchor="" x="1018.76" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (2,328 samples, 2.89%)</title><rect x="867.8" y="276" width="34.0" height="15.0" fill="rgb(223,193,30)" rx="2" ry="2" />
+<text text-anchor="" x="870.75" y="286.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>log_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/server.py:536) (625 samples, 0.78%)</title><rect x="1045.4" y="212" width="9.2" height="15.0" fill="rgb(252,29,5)" rx="2" ry="2" />
+<text text-anchor="" x="1048.45" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_live_receivers (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:260) (147 samples, 0.18%)</title><rect x="847.4" y="228" width="2.1" height="15.0" fill="rgb(234,99,38)" rx="2" ry="2" />
+<text text-anchor="" x="850.36" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>reloader_thread (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:274) (3,631 samples, 4.50%)</title><rect x="11.2" y="212" width="53.1" height="15.0" fill="rgb(217,201,18)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >reloa..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__enter__ (&lt;frozen importlib._bootstrap&gt;:149) (236 samples, 0.29%)</title><rect x="914.4" y="372" width="3.5" height="15.0" fill="rgb(233,2,47)" rx="2" ry="2" />
+<text text-anchor="" x="917.42" y="382.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parsestr (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:68) (301 samples, 0.37%)</title><rect x="769.8" y="196" width="4.4" height="15.0" fill="rgb(253,26,35)" rx="2" ry="2" />
+<text text-anchor="" x="772.76" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_find_and_load (&lt;frozen importlib._bootstrap&gt;:979) (631 samples, 0.78%)</title><rect x="914.0" y="356" width="9.3" height="15.0" fill="rgb(235,73,6)" rx="2" ry="2" />
+<text text-anchor="" x="917.04" y="366.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/deprecation.py:91) (229 samples, 0.28%)</title><rect x="1083.4" y="212" width="3.4" height="15.0" fill="rgb(249,223,49)" rx="2" ry="2" />
+<text text-anchor="" x="1086.44" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/middleware.py:12) (169 samples, 0.21%)</title><rect x="1092.5" y="324" width="2.5" height="15.0" fill="rgb(225,39,33)" rx="2" ry="2" />
+<text text-anchor="" x="1095.53" y="334.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_handle_request_noblock (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:317) (218 samples, 0.27%)</title><rect x="1132.6" y="116" width="3.1" height="15.0" fill="rgb(236,222,6)" rx="2" ry="2" />
+<text text-anchor="" x="1135.55" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (204 samples, 0.25%)</title><rect x="1089.3" y="260" width="3.0" height="15.0" fill="rgb(217,1,40)" rx="2" ry="2" />
+<text text-anchor="" x="1092.30" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_bootstrap (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:888) (3,115 samples, 3.86%)</title><rect x="1014.4" y="52" width="45.6" height="15.0" fill="rgb(210,64,44)" rx="2" ry="2" />
+<text text-anchor="" x="1017.37" y="62.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >_boo..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>process_request (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/messages/middleware.py:12) (343 samples, 0.43%)</title><rect x="1120.9" y="164" width="5.0" height="15.0" fill="rgb(253,17,7)" rx="2" ry="2" />
+<text text-anchor="" x="1123.91" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_lock_unlock_module (&lt;frozen importlib._bootstrap&gt;:208) (249 samples, 0.31%)</title><rect x="918.9" y="372" width="3.7" height="15.0" fill="rgb(212,164,23)" rx="2" ry="2" />
+<text text-anchor="" x="921.94" y="382.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_call_parse (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:182) (348 samples, 0.43%)</title><rect x="817.8" y="244" width="5.1" height="15.0" fill="rgb(245,176,5)" rx="2" ry="2" />
+<text text-anchor="" x="820.80" y="254.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>start (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:846) (788 samples, 0.98%)</title><rect x="1174.8" y="148" width="11.5" height="15.0" fill="rgb(212,97,29)" rx="2" ry="2" />
+<text text-anchor="" x="1177.78" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (457 samples, 0.57%)</title><rect x="874.8" y="324" width="6.7" height="15.0" fill="rgb(229,84,3)" rx="2" ry="2" />
+<text text-anchor="" x="877.84" y="334.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parsestr (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/parser.py:68) (155 samples, 0.19%)</title><rect x="785.0" y="196" width="2.2" height="15.0" fill="rgb(224,19,44)" rx="2" ry="2" />
+<text text-anchor="" x="787.97" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:274) (145 samples, 0.18%)</title><rect x="973.2" y="196" width="2.2" height="15.0" fill="rgb(242,75,44)" rx="2" ry="2" />
+<text text-anchor="" x="976.24" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>code_changed (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/utils/autoreload.py:203) (1,864 samples, 2.31%)</title><rect x="11.2" y="228" width="27.3" height="15.0" fill="rgb(215,148,2)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >c..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__call__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/contrib/staticfiles/handlers.py:65) (6,804 samples, 8.44%)</title><rect x="837.2" y="180" width="99.6" height="15.0" fill="rgb(213,115,41)" rx="2" ry="2" />
+<text text-anchor="" x="840.21" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >__call__ (/U..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>should_redirect_with_slash (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/middleware/common.py:71) (180 samples, 0.22%)</title><rect x="885.0" y="340" width="2.6" height="15.0" fill="rgb(217,107,19)" rx="2" ry="2" />
+<text text-anchor="" x="888.00" y="350.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>execute_from_command_line (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/__init__.py:381) (50,000 samples, 62.02%)</title><rect x="11.2" y="68" width="731.8" height="15.0" fill="rgb(237,199,30)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="78.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >execute_from_command_line (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-pack..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>accept (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socket.py:216) (465 samples, 0.58%)</title><rect x="1154.5" y="148" width="6.8" height="15.0" fill="rgb(209,178,7)" rx="2" ry="2" />
+<text text-anchor="" x="1157.51" y="158.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>close (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/email/feedparser.py:195) (848 samples, 1.05%)</title><rect x="816.5" y="228" width="12.4" height="15.0" fill="rgb(219,14,9)" rx="2" ry="2" />
+<text text-anchor="" x="819.47" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_get_response (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/base.py:158) (723 samples, 0.90%)</title><rect x="1110.3" y="180" width="10.6" height="15.0" fill="rgb(213,44,41)" rx="2" ry="2" />
+<text text-anchor="" x="1113.33" y="190.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (137 samples, 0.17%)</title><rect x="950.1" y="292" width="2.0" height="15.0" fill="rgb(217,179,47)" rx="2" ry="2" />
+<text text-anchor="" x="953.09" y="302.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>run (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/threading.py:864) (280 samples, 0.35%)</title><rect x="1020.6" y="84" width="4.1" height="15.0" fill="rgb(234,200,39)" rx="2" ry="2" />
+<text text-anchor="" x="1023.64" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>_lock_unlock_module (&lt;frozen importlib._bootstrap&gt;:208) (162 samples, 0.20%)</title><rect x="1123.3" y="260" width="2.3" height="15.0" fill="rgb(211,52,3)" rx="2" ry="2" />
+<text text-anchor="" x="1126.27" y="270.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>inner (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/handlers/exception.py:34) (281 samples, 0.35%)</title><rect x="943.3" y="228" width="4.1" height="15.0" fill="rgb(252,152,5)" rx="2" ry="2" />
+<text text-anchor="" x="946.32" y="238.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>write (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/wsgiref/handlers.py:280) (775 samples, 0.96%)</title><rect x="978.0" y="196" width="11.3" height="15.0" fill="rgb(225,44,26)" rx="2" ry="2" />
+<text text-anchor="" x="980.97" y="206.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>execute (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/management/__init__.py:375) (50,000 samples, 62.02%)</title><rect x="11.2" y="84" width="731.8" height="15.0" fill="rgb(251,123,17)" rx="2" ry="2" />
+<text text-anchor="" x="14.19" y="94.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >execute (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/core/m..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>finish_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/socketserver.py:361) (1,904 samples, 2.36%)</title><rect x="1026.8" y="116" width="27.9" height="15.0" fill="rgb(211,167,18)" rx="2" ry="2" />
+<text text-anchor="" x="1029.84" y="126.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  >f..</text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>log_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/server.py:536) (152 samples, 0.19%)</title><rect x="1035.7" y="212" width="2.2" height="15.0" fill="rgb(220,222,11)" rx="2" ry="2" />
+<text text-anchor="" x="1038.68" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>__init__ (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/http/response.py:291) (459 samples, 0.57%)</title><rect x="1111.9" y="212" width="6.7" height="15.0" fill="rgb(233,133,28)" rx="2" ry="2" />
+<text text-anchor="" x="1114.87" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>send (/Users/callistoiv/.local/share/virtualenvs/pyspy36/lib/python3.6/site-packages/django/dispatch/dispatcher.py:175) (148 samples, 0.18%)</title><rect x="852.0" y="212" width="2.1" height="15.0" fill="rgb(250,12,21)" rx="2" ry="2" />
+<text text-anchor="" x="854.97" y="222.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+<g class="func_g" onmouseover="s(this)" onmouseout="c()" onclick="zoom(this)">
+<title>parse_request (/usr/local/Cellar/python/3.6.5_1/Frameworks/Python.framework/Versions/3.6/lib/python3.6/http/server.py:329) (155 samples, 0.19%)</title><rect x="785.0" y="164" width="2.2" height="15.0" fill="rgb(210,59,18)" rx="2" ry="2" />
+<text text-anchor="" x="787.97" y="174.5" font-size="12" font-family="Verdana" fill="rgb(0,0,0)"  ></text>
+</g>
+</svg>
