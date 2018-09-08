@@ -100,6 +100,8 @@ $ ab -n 50000 "http://127.0.0.1:8888/name/john.json"
 
 svgの右上に検索機能があるのでそこに今回実装したエントリーポイントの関数名`hello_world`を入力するとそこがピンク色にハイライトされる。
 
+<img width="1199" alt="prompt_2018-09-08 14.51.45.jpg" src="https://qiita-image-store.s3.amazonaws.com/0/4981/e88622d5-ae84-fd80-cf46-df31fa77b793.jpeg">
+
 <img width="1201" alt="search_2018-09-08 13.55.23.jpg" src="https://qiita-image-store.s3.amazonaws.com/0/4981/4b157eab-57f1-dcf7-a506-6f5ae7728d54.jpeg">
 
 プロファイリングの結果から今回実装したアプリケーションは非常にシンプルなもののためアプリケーション全体としては全く時間を占めていないことが分かった。
