@@ -16,8 +16,6 @@ def hello_world(name):
 
     response = Response(json.dumps(result))
     response.headers['Content-Type'] = "application/json"
-    response.headers['Last-Modified'] = \
-        "Last-Modified: Wed, 21 Jun 2012 07:00:25 GMT"
     return response
 
 if __name__ == '__main__':

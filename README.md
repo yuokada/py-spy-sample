@@ -30,8 +30,6 @@ def hello_world(name):
 
     response = Response(json.dumps(result))
     response.headers['Content-Type'] = "application/json"
-    response.headers['Last-Modified'] = \
-        "Last-Modified: Wed, 21 Jun 2012 07:00:25 GMT"
     return response
 ```
 https://github.com/yuokada/py-spy-sample
