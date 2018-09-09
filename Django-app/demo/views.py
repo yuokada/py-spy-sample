@@ -3,7 +3,7 @@ import json
 from django.shortcuts import HttpResponse
 
 
-def hello_world(request, name):
+def hello_world(request: object, name: str) -> object:
     greet = "Hello %s from flask!" % name
     result = {
         "ResultSet": {
