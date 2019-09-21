@@ -35,7 +35,7 @@ def hello_world(name):
 https://github.com/yuokada/py-spy-sample
 
 ```shell
-$ python3.6 server.py
+$ python3 server.py
 ```
 
 次に別のターミナルを立ち上げてpy-spyを実行する。
@@ -77,7 +77,7 @@ Wrote flame graph 'profile.svg'. Samples: 200000 Errors: 0
 
 ```
 $ sudo py-spy --flame profile.svg -d 20 -r 10000 \
-  -- python3.6 server.py
+  -- python3 server.py
 ```
 
 なので、サーバープロセスからプロファイリングするときは`py-spy`から立ち上げない方が良さ気。
